@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import json
 import requests
 import time
 import sys
-from ConfigParser import SafeConfigParser
+from configparser import SafeConfigParser
 from requests_kerberos import HTTPKerberosAuth
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -17,7 +17,7 @@ def parameters():
             params = {'states': 'RUNNING'}
             return(params)
 def AmbariRest():
-    url = ambariServer + "/api/v1/clusters/" + clusterName  + "alerts?fields=*"
+    url = ambariServer + "/api/v1/clusters/" + clusterName  + "/alerts?fields=*"
     r = requests.get(url, verify=False, auth=(username, password))
     return(json.loads(r.text))
 
@@ -28,7 +28,7 @@ def YARNRest() :
 
 def TimelineRest(entityid, params):
     url = timeLineServer + "/ws/v1/timeline/" + entityid
-    if krb5Auth:
+    if krb5Auth == True:
         auth = HTTPKerberosAuth()
     else:
         auth = None
@@ -36,10 +36,14 @@ def TimelineRest(entityid, params):
     response = json.loads(r.text)
     return(response['entities'])
 
-def timelinefilter(sessionid):
+def timelinefilter(sessionid, currentuser):
     params = {'secondaryFilter' : 'SESSION_ID:%s' % (sessionid)}
-    username = TimelineRest('HIVE_QUERY_ID', params)[0]['primaryfilters']['requestuser']
-    return(username.split('@')[0])
+    usernames = TimelineRest('HIVE_QUERY_ID', params)
+    if not usernames:
+        return(currentuser)
+    else:
+        username = usernames[0]['primaryfilters']['requestuser'][0]
+        return(username.split('@')[0])
 
 def YARNJobs():
     List =[]
@@ -54,11 +58,12 @@ def YARNJobs():
 
 def ambarialerts():
     List =[]
-    startedTime = int(round( time.time() - 60))
+    startedTime = int((time.time() - 60 )* 1000)
     for alert in AmbariRest()['items']:
-        filtered = dict((k, v) for k, v in alert.items() if v['state'] == 'CRITICAL' and v['original_timestamp'] >= startedTime)
-        filtered.update('type':'serviceMonitor')
-        List.append(filtered)
+        filtered = dict((k, v) for k, v in alert.items() if alert['Alert']['original_timestamp'] >= startedTime)
+        if filtered:
+            filtered['Alert'].update({'type':'serviceMonitor'})
+            List.append(filtered['Alert'])
     return(List)
 
 def YARNaggregate():
@@ -72,19 +77,21 @@ def YARNaggregate():
         totalmemorymb += job['allocatedMB']
         totalcontainers += job['runningContainers']
     List = {'totalclusterusage' : totalclusterusage, 'totalcpucores' : totalcpucores, 'totalmemorymb': totalmemorymb, 'totalcontainers': totalcontainers, 'type' : 'YARNaggregate' }
-    return(List)
+    return(json.dumps(List))
 
 def yarnJob(yarnJobs):
     for job in yarnJobs:
-        if hhiveImpersonationFilter == True:# and job['user'] == 'hive':
+        if hiveImpersonationFilter == True and job['applicationType'] == 'TEZ':
             sessionid = job['name'].split('-',1)[1]
-            job.update('user', timelinefilter(sessionid))
-            #print timelinefilter(sessionid)
-        print job
+            currentuser = job['user']
+            newuser = timelinefilter(sessionid, currentuser)
+            if newuser != currentuser:
+                job.update('user', newuser)
+        print(json.dumps(job))
 
-def alerts(alerts):
+def ambarialert(alerts):
     for alert in  alerts:
-        print alert
+        print(json.dumps(alert))
 
 def configs():
     try:
@@ -121,12 +128,12 @@ def run():
         print("Error while gathering YARN Running Jobs", file=sys.stderr)
         pass
     try:
-        print YARNaggregate()
+        print(YARNaggregate())
     except:
         print("Error while gathering YARN Aggregate", file=sys.stderr)
         pass
     try:
-        alerts(ambarialerts)
+        ambarialert(ambarialerts())
     except:
         print("Error while gathering ambari alerts", file=sys.stderr)
         pass
